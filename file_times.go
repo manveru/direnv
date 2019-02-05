@@ -25,48 +25,34 @@ func NewFileTimes() (times FileTimes) {
 	return
 }
 
-func (times *FileTimes) Update(path string) (err error) {
-	var modtime int64
-	var exists bool
-
-	// Handle the path with Stat, which looks at the other
-	// end of symlinks
+func (times *FileTimes) stat(path string) (modtime int64, exists bool, err error) {
 	stat, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		exists = false
-	} else {
-		exists = true
-		if err != nil {
-			return
+	if err == nil {
+		return stat.ModTime().Unix(), true, nil
+	}
+	return 0, !os.IsNotExist(err), err
+}
+
+func (times *FileTimes) lstat(path string) (modtime int64, exists bool, err error) {
+	stat, err := os.Lstat(path)
+	if err == nil {
+		return stat.ModTime().Unix(), true, nil
+	}
+	return 0, !os.IsNotExist(err), err
+}
+
+func (times *FileTimes) Update(path string) error {
+	modtime, exists, err := times.stat(path)
+	lmodtime, lexists, lerr := times.lstat(path)
+
+	if err == nil && lerr == nil {
+		if lmodtime > modtime {
+			return times.NewTime(path, lmodtime, lexists)
 		}
-		modtime = stat.ModTime().Unix()
+		return times.NewTime(path, modtime, exists)
 	}
 
-	// Handle the path with Lstat, which examines the
-	// symlink itself.
-	//
-	// This second case is useful in case the symlink
-	// changes where it is pointing, and should handle
-	// the case where the symlink's target doesn't exist.
-	stat, err = os.Lstat(path)
-	if os.IsNotExist(err) {
-		exists = false
-	} else {
-		exists = true
-		if err != nil {
-			return
-		}
-		symlink_modtime := stat.ModTime().Unix()
-
-		if symlink_modtime > modtime {
-			// take the newest of the two
-			modtime = symlink_modtime
-		}
-	}
-
-	err = times.NewTime(path, modtime, exists)
-
-	return
+	return times.NewTime(path, 0, exists)
 }
 
 func (times *FileTimes) NewTime(path string, modtime int64, exists bool) (err error) {
@@ -79,9 +65,9 @@ func (times *FileTimes) NewTime(path string, modtime int64, exists bool) (err er
 
 	path = filepath.Clean(path)
 
-	for idx := range *(times.list) {
-		if (*times.list)[idx].Path == path {
-			time = &(*times.list)[idx]
+	for _, newTime := range *(times.list) {
+		if newTime.Path == path {
+			time = &newTime
 			break
 		}
 	}
@@ -97,17 +83,15 @@ func (times *FileTimes) NewTime(path string, modtime int64, exists bool) (err er
 	return
 }
 
-type checkFailed struct {
-	message string
-}
+type checkFailed string
 
 func (err checkFailed) Error() string {
-	return err.message
+	return string(err)
 }
 
 func (times *FileTimes) Check() (err error) {
 	if len(*times.list) == 0 {
-		return checkFailed{"Times list is empty"}
+		return checkFailed("Times list is empty")
 	}
 	for idx := range *times.list {
 		err = (*times.list)[idx].Check()
@@ -129,7 +113,7 @@ func (times *FileTimes) CheckOne(path string) (err error) {
 			return
 		}
 	}
-	return checkFailed{fmt.Sprintf("File %q is unknown", path)}
+	return checkFailed(fmt.Sprintf("File %q is unknown", path))
 }
 
 func (time FileTime) Check() (err error) {
@@ -140,12 +124,12 @@ func (time FileTime) Check() (err error) {
 	case os.IsNotExist(lerr):
 		if time.Exists {
 			log_debug("Lstat Check: %s: gone", time.Path)
-			return checkFailed{fmt.Sprintf("File %q is a missing (Lstat)", time.Path)}
+			return checkFailed(fmt.Sprintf("File %q is missing (Lstat)", time.Path))
 		}
 	case os.IsNotExist(err):
 		if time.Exists {
 			log_debug("Stat Check: %s: gone", time.Path)
-			return checkFailed{fmt.Sprintf("File %q is missing (Stat)", time.Path)}
+			return checkFailed(fmt.Sprintf("File %q is missing (Stat)", time.Path))
 		}
 	case lerr != nil:
 		log_debug("Lstat Check: %s: ERR: %v", time.Path, lerr)
@@ -155,12 +139,12 @@ func (time FileTime) Check() (err error) {
 		return err
 	case !time.Exists:
 		log_debug("Check: %s: appeared", time.Path)
-		return checkFailed{fmt.Sprintf("File %q newly created", time.Path)}
+		return checkFailed(fmt.Sprintf("File %q newly created", time.Path))
 	case stat.ModTime().Unix() != time.Modtime && lstat.ModTime().Unix() != time.Modtime:
 		log_debug("Check: %s: stale (stat: %v, lstat: %v, lastcheck: %v)",
 			time.Path, stat.ModTime().Unix(), lstat.ModTime().Unix(),
 			time.Modtime)
-		return checkFailed{fmt.Sprintf("File %q has changed", time.Path)}
+		return checkFailed(fmt.Sprintf("File %q has changed", time.Path))
 	}
 	log_debug("Check: %s: up to date", time.Path)
 	return nil
