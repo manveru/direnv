@@ -134,20 +134,32 @@ func (times *FileTimes) CheckOne(path string) (err error) {
 
 func (time FileTime) Check() (err error) {
 	stat, err := os.Stat(time.Path)
+	lstat, lerr := os.Lstat(time.Path)
+
 	switch {
+	case os.IsNotExist(lerr):
+		if time.Exists {
+			log_debug("Lstat Check: %s: gone", time.Path)
+			return checkFailed{fmt.Sprintf("File %q is a missing (Lstat)", time.Path)}
+		}
 	case os.IsNotExist(err):
 		if time.Exists {
-			log_debug("Check: %s: gone", time.Path)
-			return checkFailed{fmt.Sprintf("File %q is missing", time.Path)}
+			log_debug("Stat Check: %s: gone", time.Path)
+			return checkFailed{fmt.Sprintf("File %q is missing (Stat)", time.Path)}
 		}
+	case lerr != nil:
+		log_debug("Lstat Check: %s: ERR: %v", time.Path, lerr)
+		return lerr
 	case err != nil:
-		log_debug("Check: %s: ERR: %v", time.Path, err)
+		log_debug("Stat Check: %s: ERR: %v", time.Path, err)
 		return err
 	case !time.Exists:
 		log_debug("Check: %s: appeared", time.Path)
 		return checkFailed{fmt.Sprintf("File %q newly created", time.Path)}
-	case stat.ModTime().Unix() != time.Modtime:
-		log_debug("Check: %s: stale", time.Path)
+	case stat.ModTime().Unix() != time.Modtime && lstat.ModTime().Unix() != time.Modtime:
+		log_debug("Check: %s: stale (stat: %v, lstat: %v, lastcheck: %v)",
+			time.Path, stat.ModTime().Unix(), lstat.ModTime().Unix(),
+			time.Modtime)
 		return checkFailed{fmt.Sprintf("File %q has changed", time.Path)}
 	}
 	log_debug("Check: %s: up to date", time.Path)
